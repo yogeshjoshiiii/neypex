@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Play, Pause, Volume2, VolumeX, Maximize, RotateCcw, RotateCw, Settings, X } from "lucide-react";
+import { Play, Pause, Maximize, Minimize, RotateCcw, RotateCw, Settings, X } from "lucide-react";
 import { getProgress, setProgress } from "@/lib/library";
 
 type Props = {
@@ -12,78 +12,19 @@ type Props = {
 
 const QUALITIES = ["Auto", "1080p", "720p", "480p"];
 
-function extractDriveId(url: string): string | null {
-  if (!url) return null;
-  const m1 = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
-  if (m1) return m1[1];
-  const m2 = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
-  if (m2) return m2[1];
-  return null;
-}
-
-function isDriveUrl(url: string): boolean {
-  return /drive\.google\.com/.test(url || "");
-}
-
-const DEMO_DRIVE_ID = "1vpnBvMffAeIDbyTY_s0-qYc8LwJOl2b2";
-
 export const VideoPlayer = ({ src, movieId, title, onClose, resume = true }: Props) => {
-  const driveId = extractDriveId(src) || (!src ? DEMO_DRIVE_ID : null);
-  const useDrive = !!driveId;
-
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [muted, setMuted] = useState(true);
-  const [volume, setVolume] = useState(1);
   const [showControls, setShowControls] = useState(true);
-  const [quality, setQuality] = useState("Auto");
   const [showSettings, setShowSettings] = useState(false);
-  const [rotateFallback, setRotateFallback] = useState(false);
+  const [quality, setQuality] = useState("Auto");
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   const hideTimer = useRef<number | null>(null);
-
-  // ✅ Landscape + fullscreen (NOW WORKS FOR ALL VIDEO)
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-
-    const isMobile =
-      /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
-      (navigator.maxTouchPoints > 1 && /Mac/i.test(navigator.platform));
-
-    if (!isMobile) return;
-
-    let locked = false;
-
-    const enter = async () => {
-      try {
-        if (!document.fullscreenElement && el.requestFullscreen) {
-          await el.requestFullscreen();
-        }
-
-        const orient: any = (screen as any).orientation;
-        if (orient?.lock) {
-          await orient.lock("landscape").then(() => {
-            locked = true;
-          }).catch(() => {});
-        }
-      } catch {}
-
-      const portrait = window.matchMedia("(orientation: portrait)").matches;
-      if (portrait && !locked) setRotateFallback(true);
-    };
-
-    const t = setTimeout(enter, 300);
-
-    return () => {
-      clearTimeout(t);
-      try { (screen as any).orientation?.unlock?.(); } catch {}
-    };
-  }, []);
 
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
@@ -104,7 +45,6 @@ export const VideoPlayer = ({ src, movieId, title, onClose, resume = true }: Pro
     return `${m}:${sec.toString().padStart(2, "0")}`;
   };
 
-  // ✅ Better hide timing
   const armHide = () => {
     setShowControls(true);
     if (hideTimer.current) window.clearTimeout(hideTimer.current);
@@ -112,6 +52,57 @@ export const VideoPlayer = ({ src, movieId, title, onClose, resume = true }: Pro
       if (playing) setShowControls(false);
     }, 4000);
   };
+
+  // ✅ FULLSCREEN TOGGLE (REAL)
+  const toggleFullscreen = async () => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    if (!document.fullscreenElement) {
+      await el.requestFullscreen();
+      setIsFullscreen(true);
+    } else {
+      await document.exitFullscreen();
+      setIsFullscreen(false);
+    }
+  };
+
+  // ✅ Track fullscreen state
+  useEffect(() => {
+    const handler = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener("fullscreenchange", handler);
+    return () => document.removeEventListener("fullscreenchange", handler);
+  }, []);
+
+  // ✅ AUTO LANDSCAPE + FULLSCREEN (MOBILE)
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const isMobile =
+      /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ||
+      navigator.maxTouchPoints > 1;
+
+    if (!isMobile) return;
+
+    const enter = async () => {
+      try {
+        if (!document.fullscreenElement) {
+          await el.requestFullscreen();
+        }
+
+        const orient: any = screen.orientation;
+        if (orient?.lock) {
+          await orient.lock("landscape").catch(() => {});
+        }
+      } catch {}
+    };
+
+    const t = setTimeout(enter, 500);
+    return () => clearTimeout(t);
+  }, []);
 
   useEffect(() => {
     const v = videoRef.current;
@@ -153,10 +144,9 @@ export const VideoPlayer = ({ src, movieId, title, onClose, resume = true }: Pro
     };
   }, [movieId, resume]);
 
-  const fullscreen = () => {
-    const el = containerRef.current;
-    if (!document.fullscreenElement) el?.requestFullscreen?.();
-    else document.exitFullscreen?.();
+  const onSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = videoRef.current;
+    if (v) v.currentTime = Number(e.target.value);
   };
 
   return (
@@ -164,16 +154,7 @@ export const VideoPlayer = ({ src, movieId, title, onClose, resume = true }: Pro
       ref={containerRef}
       className="relative w-full h-full bg-black"
       onMouseMove={armHide}
-      onClick={() => setShowControls(s => !s)} // ✅ tap toggle
-      style={rotateFallback ? {
-        position: "fixed",
-        inset: 0,
-        zIndex: 9999,
-        width: "100vh",
-        height: "100vw",
-        transform: "rotate(90deg) translateY(-100%)",
-        transformOrigin: "top left",
-      } : {}}
+      onClick={() => setShowControls(s => !s)}
     >
       <video
         ref={videoRef}
@@ -185,31 +166,51 @@ export const VideoPlayer = ({ src, movieId, title, onClose, resume = true }: Pro
         onClick={togglePlay}
       />
 
-      {/* ✅ YouTube-style center controls */}
+      {/* Top Bar */}
+      <div className={`absolute top-0 w-full p-4 flex justify-between bg-gradient-to-b from-black/80 ${showControls ? "opacity-100" : "opacity-0"}`}>
+        <span className="text-white">{title}</span>
+        {onClose && (
+          <button onClick={onClose}>
+            <X className="text-white" />
+          </button>
+        )}
+      </div>
+
+      {/* Center Controls */}
       {showControls && (
-        <div className="absolute inset-0 flex items-center justify-center gap-6">
-          <button onClick={() => skip(-10)} className="p-3 rounded-full bg-black/50">
-            <RotateCcw className="w-6 h-6 text-white" />
+        <div className="absolute inset-0 flex items-center justify-center gap-10">
+          <button onClick={() => skip(-10)} className="bg-black/50 p-4 rounded-full">
+            <RotateCcw className="w-7 h-7 text-white" />
           </button>
 
-          <button onClick={togglePlay} className="p-5 rounded-full bg-white text-black">
-            {playing ? <Pause className="w-8 h-8" /> : <Play className="w-8 h-8 ml-1" />}
+          <button onClick={togglePlay} className="bg-white p-6 rounded-full">
+            {playing ? <Pause className="w-10 h-10 text-black" /> : <Play className="w-10 h-10 text-black ml-1" />}
           </button>
 
-          <button onClick={() => skip(10)} className="p-3 rounded-full bg-black/50">
-            <RotateCw className="w-6 h-6 text-white" />
+          <button onClick={() => skip(10)} className="bg-black/50 p-4 rounded-full">
+            <RotateCw className="w-7 h-7 text-white" />
           </button>
         </div>
       )}
 
-      {/* Bottom controls */}
+      {/* Bottom Controls */}
       <div className={`absolute bottom-0 w-full p-4 bg-black/70 ${showControls ? "block" : "hidden"}`}>
         <div className="flex items-center gap-2 text-white text-sm">
           <span>{fmt(current)}</span>
-          <input type="range" min={0} max={duration || 0} value={current} onChange={(e) => {
-            const v = videoRef.current;
-            if (v) v.currentTime = Number(e.target.value);
-          }} className="flex-1" />
+
+          <input
+            type="range"
+            min={0}
+            max={duration || 0}
+            value={current}
+            step={0.1}
+            onChange={onSeek}
+            className="flex-1 h-1"
+            style={{
+              background: `linear-gradient(to right, red ${(current / duration) * 100}%, rgba(255,255,255,0.3) ${(current / duration) * 100}%)`
+            }}
+          />
+
           <span>{fmt(duration)}</span>
         </div>
 
@@ -218,8 +219,26 @@ export const VideoPlayer = ({ src, movieId, title, onClose, resume = true }: Pro
             {playing ? <Pause /> : <Play />}
           </button>
 
-          <button onClick={fullscreen}>
-            <Maximize />
+          {/* Settings */}
+          <div className="relative">
+            <button onClick={() => setShowSettings(s => !s)}>
+              <Settings className="text-white" />
+            </button>
+
+            {showSettings && (
+              <div className="absolute bottom-10 right-0 bg-black p-2 rounded">
+                {QUALITIES.map(q => (
+                  <button key={q} onClick={() => setQuality(q)} className="block text-white">
+                    {q}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* FULLSCREEN BUTTON */}
+          <button onClick={toggleFullscreen}>
+            {isFullscreen ? <Minimize /> : <Maximize />}
           </button>
         </div>
       </div>
