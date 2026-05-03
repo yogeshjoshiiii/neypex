@@ -1,0 +1,1 @@
+CREATE POLICY "support_delete_all" ON public.support_messages FOR DELETE USING (true);
