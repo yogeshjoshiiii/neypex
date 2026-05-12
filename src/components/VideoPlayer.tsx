@@ -1,331 +1,113 @@
-import { useEffect, useRef, useState, useCallback } from "react";
-import { Play, Pause, Volume2, VolumeX, Maximize, RotateCcw, RotateCw, Settings, X } from "lucide-react";
-import { getProgress, setProgress } from "@/lib/library";
+import { useEffect, useRef, useState } from "react";
+import { X } from "lucide-react";
 
 type Props = {
   src: string;
-  movieId: string;
   title: string;
   onClose?: () => void;
-  resume?: boolean;
 };
 
-const QUALITIES = ["Auto", "1080p", "720p", "480p"];
-
-// Extract Google Drive file id from any common share URL format
-function extractDriveId(url: string): string | null {
+function extractDriveId(url: string) {
   if (!url) return null;
-  const m1 = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
-  if (m1) return m1[1];
-  const m2 = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
-  if (m2) return m2[1];
+
+  const match = url.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if (match) return match[1];
+
+  const match2 = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (match2) return match2[1];
+
   return null;
 }
 
-function isDriveUrl(url: string): boolean {
-  return /drive\.google\.com/.test(url || "");
-}
-
-// Demo fallback: a known-public Drive file the user shared for testing
-const DEMO_DRIVE_ID = "1vpnBvMffAeIDbyTY_s0-qYc8LwJOl2b2";
-
-export const VideoPlayer = ({ src, movieId, title, onClose, resume = true }: Props) => {
-  // Google Drive playback path (uses official preview iframe — most reliable)
-  const driveId = extractDriveId(src) || (isDriveUrl(src) ? null : null) || (!src ? DEMO_DRIVE_ID : null);
-  const useDrive = !!driveId;
-  const videoRef = useRef<HTMLVideoElement>(null);
+export const VideoPlayer = ({ src, title, onClose }: Props) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [playing, setPlaying] = useState(false);
-  const [current, setCurrent] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [muted, setMuted] = useState(false);
-  const [volume, setVolume] = useState(1);
-  const [showControls, setShowControls] = useState(true);
-  const [quality, setQuality] = useState("Auto");
-  const [showSettings, setShowSettings] = useState(false);
-  const hideTimer = useRef<number | null>(null);
+  const driveId = extractDriveId(src);
 
-  // Screen-capture deterrent
-  useEffect(() => {
-    const handler = () => {};
-    document.addEventListener("visibilitychange", handler);
-    return () => document.removeEventListener("visibilitychange", handler);
-  }, []);
+  const [rotate, setRotate] = useState(false);
 
-  // Force landscape on mobile (works on Android via Fullscreen+OrientationLock API,
-  // and on iOS via CSS rotation fallback since iOS doesn't support orientation.lock)
-  const [rotateFallback, setRotateFallback] = useState(false);
+  // AUTO LANDSCAPE + FULLSCREEN
   useEffect(() => {
-    if (!useDrive) return;
     const el = containerRef.current;
     if (!el) return;
-    const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
-      || (navigator.maxTouchPoints > 1 && /Mac/i.test(navigator.platform));
-    if (!isMobile) return;
 
-    let locked = false;
+    const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent);
+
     const enter = async () => {
       try {
-        if (!document.fullscreenElement && el.requestFullscreen) {
+        if (el.requestFullscreen) {
           await el.requestFullscreen();
         }
-        const orient: any = (screen as any).orientation;
-        if (orient?.lock) {
-          await orient.lock("landscape").then(() => { locked = true; }).catch(() => {});
+
+        const orientation: any = (screen as any).orientation;
+        if (orientation?.lock) {
+          await orientation.lock("landscape").catch(() => {});
         }
       } catch {}
-      // Fallback: if still portrait, rotate via CSS
-      const portrait = window.matchMedia("(orientation: portrait)").matches;
-      if (portrait && !locked) setRotateFallback(true);
+
+      const isPortrait = window.innerHeight > window.innerWidth;
+      setRotate(isMobile && isPortrait);
     };
 
-    const updateRotation = () => {
-      const portrait = window.matchMedia("(orientation: portrait)").matches;
-      setRotateFallback(portrait && !locked);
+    enter();
+
+    const update = () => {
+      const isPortrait = window.innerHeight > window.innerWidth;
+      setRotate(isPortrait);
     };
 
-    const t = setTimeout(enter, 200);
-    window.addEventListener("resize", updateRotation);
-    window.addEventListener("orientationchange", updateRotation);
+    window.addEventListener("resize", update);
+    window.addEventListener("orientationchange", update);
+
     return () => {
-      clearTimeout(t);
-      window.removeEventListener("resize", updateRotation);
-      window.removeEventListener("orientationchange", updateRotation);
-      try { (screen as any).orientation?.unlock?.(); } catch {}
-      setRotateFallback(false);
+      window.removeEventListener("resize", update);
+      window.removeEventListener("orientationchange", update);
     };
-  }, [useDrive]);
-
-
-  const togglePlay = useCallback(() => {
-    const v = videoRef.current; if (!v) return;
-    if (v.paused) v.play(); else v.pause();
   }, []);
-
-  const skip = (s: number) => { const v = videoRef.current; if (v) v.currentTime = Math.max(0, Math.min(v.duration, v.currentTime + s)); };
-
-  const fmt = (s: number) => {
-    if (!isFinite(s)) return "0:00";
-    const m = Math.floor(s / 60); const sec = Math.floor(s % 60);
-    return `${m}:${sec.toString().padStart(2, "0")}`;
-  };
-
-  const armHide = () => {
-    setShowControls(true);
-    if (hideTimer.current) window.clearTimeout(hideTimer.current);
-    hideTimer.current = window.setTimeout(() => { if (playing) setShowControls(false); }, 2800);
-  };
-
-  useEffect(() => {
-    const v = videoRef.current; if (!v) return;
-    const onLoaded = () => {
-      setDuration(v.duration);
-      if (resume) {
-        const p = getProgress(movieId);
-        if (p && p < v.duration - 5) v.currentTime = p;
-      }
-    };
-    const onTime = () => { setCurrent(v.currentTime); setProgress(movieId, v.currentTime); };
-    const onPlay = () => { setPlaying(true); armHide(); };
-    const onPause = () => { setPlaying(false); setShowControls(true); };
-    v.addEventListener("loadedmetadata", onLoaded);
-    v.addEventListener("timeupdate", onTime);
-    v.addEventListener("play", onPlay);
-    v.addEventListener("pause", onPause);
-    return () => {
-      v.removeEventListener("loadedmetadata", onLoaded);
-      v.removeEventListener("timeupdate", onTime);
-      v.removeEventListener("play", onPlay);
-      v.removeEventListener("pause", onPause);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [movieId, resume]);
-
-  // Keyboard
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === " ") { e.preventDefault(); togglePlay(); }
-      if (e.key === "ArrowRight") skip(15);
-      if (e.key === "ArrowLeft") skip(-15);
-      if (e.key === "f") containerRef.current?.requestFullscreen?.();
-      if (e.key === "m") { const v = videoRef.current; if (v) v.muted = !v.muted; }
-      if (e.key === "Escape" && onClose) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [togglePlay, onClose]);
-
-  const fullscreen = () => {
-    const el = containerRef.current;
-    if (!document.fullscreenElement) el?.requestFullscreen?.();
-    else document.exitFullscreen?.();
-  };
-
-  const onSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = videoRef.current; if (v) v.currentTime = Number(e.target.value);
-  };
-
-  const onVolume = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = Number(e.target.value); setVolume(val);
-    const v = videoRef.current; if (v) { v.volume = val; v.muted = val === 0; setMuted(val === 0); }
-  };
-
-  // Google Drive: use official preview iframe (handles streaming + auth + CORS)
-  // Drive's native player already provides play/pause, ±10s skip, and quality.
-  // We mask share / popout / kebab / "Open in new tab" controls so the link can't leak.
-  if (useDrive) {
-    return (
-      <div
-        ref={containerRef}
-        className="relative w-full h-full bg-black overflow-hidden select-none"
-        onContextMenu={e => e.preventDefault()}
-        style={{
-          WebkitUserSelect: "none",
-          WebkitTouchCallout: "none",
-          ...(rotateFallback ? {
-            position: "fixed",
-            inset: 0,
-            zIndex: 9999,
-            width: "100vh",
-            height: "100vw",
-            transform: "rotate(90deg) translateY(-100%)",
-            transformOrigin: "top left",
-          } : {}),
-        } as any}
-      >
-        <iframe
-          src={`https://drive.google.com/file/d/${driveId}/preview`}
-          title={title}
-          className="absolute inset-0 w-full h-full"
-          allow="autoplay; encrypted-media; fullscreen"
-          allowFullScreen
-          frameBorder={0}
-          referrerPolicy="no-referrer"
-          sandbox="allow-scripts allow-same-origin allow-presentation"
-        />
-
-        {/* Mask Drive overlays that could leak the link:
-            - top bar (title + popout + kebab "Open in new window/Download")
-            - bottom-right "Open in new tab" pill */}
-        <div className="absolute top-0 inset-x-0 h-14 bg-black z-10" />
-        <div className="absolute bottom-0 right-0 h-14 w-40 sm:w-48 bg-black z-10" />
-
-        {/* Block right-click / long-press anywhere over the player */}
-        <div
-          className="absolute inset-0 z-[5] pointer-events-none"
-          onContextMenu={e => e.preventDefault()}
-        />
-
-        {/* Minimal close button only — no title, no watermark, no share */}
-        {onClose && (
-          <button
-            onClick={onClose}
-            className="absolute top-2 right-2 z-30 w-9 h-9 rounded-full bg-black/70 hover:bg-black/90 active:scale-95 flex items-center justify-center text-white transition-smooth"
-            aria-label="Close"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        )}
-      </div>
-    );
-  }
 
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full bg-black no-select group/player"
-      onMouseMove={armHide}
-      onMouseLeave={() => playing && setShowControls(false)}
-      onContextMenu={e => e.preventDefault()}
+      className="fixed inset-0 bg-black overflow-hidden select-none"
+      onContextMenu={(e) => e.preventDefault()}
+      style={
+        rotate
+          ? {
+              transform: "rotate(90deg)",
+              transformOrigin: "center",
+              width: "100vh",
+              height: "100vw",
+            }
+          : {}
+      }
     >
-      <video
-        ref={videoRef}
-        src={src}
-        className="w-full h-full object-contain"
-        playsInline
-        controlsList="nodownload noplaybackrate noremoteplayback"
-        disablePictureInPicture
-        onClick={togglePlay}
-        onDoubleClick={fullscreen}
-      />
-
-      {/* Top bar */}
-      <div className={`absolute top-0 inset-x-0 p-3 sm:p-5 flex items-center justify-between bg-gradient-to-b from-black/80 to-transparent transition-opacity duration-300 ${showControls ? "opacity-100" : "opacity-0"}`}>
-        <div className="text-sm sm:text-base font-medium truncate pr-2">{title}</div>
-        {onClose && (
-          <button onClick={onClose} className="p-2 rounded-full bg-black/40 hover:bg-black/70 transition-smooth" aria-label="Close">
-            <X className="w-5 h-5" />
-          </button>
-        )}
-      </div>
-
-      {/* Center play overlay when paused */}
-      {!playing && (
-        <button
-          onClick={togglePlay}
-          className="absolute inset-0 m-auto w-20 h-20 rounded-full bg-primary/90 text-primary-foreground flex items-center justify-center glow animate-scale-in"
-          aria-label="Play"
-        >
-          <Play className="w-9 h-9 fill-current ml-1" />
-        </button>
+      {/* DRIVE PLAYER */}
+      {driveId && (
+        <iframe
+          src={`https://drive.google.com/file/d/${driveId}/preview`}
+          className="absolute inset-0 w-full h-full"
+          allow="autoplay; fullscreen"
+          allowFullScreen
+          frameBorder="0"
+          sandbox="allow-scripts allow-same-origin allow-presentation"
+        />
       )}
 
-      {/* Bottom controls */}
-      <div className={`absolute bottom-0 inset-x-0 p-3 sm:p-5 bg-gradient-to-t from-black/90 to-transparent transition-opacity duration-300 ${showControls ? "opacity-100" : "opacity-0"}`}>
-        {/* Seek */}
-        <div className="flex items-center gap-3 text-xs text-white/80 mb-2">
-          <span className="tabular-nums">{fmt(current)}</span>
-          <input
-            type="range"
-            min={0}
-            max={duration || 0}
-            value={current}
-            step={0.1}
-            onChange={onSeek}
-            className="flex-1 h-1 accent-primary cursor-pointer"
-          />
-          <span className="tabular-nums">{fmt(duration)}</span>
-        </div>
+      {/* BLOCK UI OVERLAY (hide Drive UI + share buttons) */}
+      <div className="absolute top-0 left-0 w-full h-14 bg-black z-10" />
+      <div className="absolute bottom-0 right-0 w-40 h-14 bg-black z-10" />
 
-        <div className="flex items-center gap-2 sm:gap-3">
-          <button onClick={togglePlay} className="p-2 rounded-full hover:bg-white/10 transition-smooth" aria-label={playing ? "Pause" : "Play"}>
-            {playing ? <Pause className="w-6 h-6 fill-current" /> : <Play className="w-6 h-6 fill-current" />}
-          </button>
-          <button onClick={() => skip(-15)} className="p-2 rounded-full hover:bg-white/10 transition-smooth" aria-label="Back 15s">
-            <RotateCcw className="w-5 h-5" />
-          </button>
-          <button onClick={() => skip(15)} className="p-2 rounded-full hover:bg-white/10 transition-smooth" aria-label="Forward 15s">
-            <RotateCw className="w-5 h-5" />
-          </button>
+      {/* DISABLE CLICK LEAKS */}
+      <div className="absolute inset-0 z-[5]" />
 
-          <div className="hidden sm:flex items-center gap-2 ml-1">
-            <button onClick={() => { const v = videoRef.current; if (v) { v.muted = !v.muted; setMuted(v.muted); } }} className="p-2 rounded-full hover:bg-white/10 transition-smooth" aria-label="Mute">
-              {muted || volume === 0 ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
-            </button>
-            <input type="range" min={0} max={1} step={0.05} value={muted ? 0 : volume} onChange={onVolume} className="w-24 h-1 accent-primary" />
-          </div>
-
-          <div className="ml-auto flex items-center gap-2 relative">
-            <button onClick={() => setShowSettings(s => !s)} className="p-2 rounded-full hover:bg-white/10 transition-smooth" aria-label="Quality">
-              <Settings className="w-5 h-5" />
-            </button>
-            {showSettings && (
-              <div className="absolute right-12 bottom-2 bg-popover border border-border rounded-lg p-2 min-w-[140px] animate-scale-in origin-bottom-right shadow-card">
-                <p className="text-xs text-muted-foreground px-2 py-1">Quality</p>
-                {QUALITIES.map(q => (
-                  <button key={q} onClick={() => { setQuality(q); setShowSettings(false); }} className={`w-full text-left px-3 py-2 rounded-md text-sm hover:bg-secondary ${quality === q ? "text-primary" : ""}`}>
-                    {q}
-                  </button>
-                ))}
-              </div>
-            )}
-            <button onClick={fullscreen} className="p-2 rounded-full hover:bg-white/10 transition-smooth" aria-label="Fullscreen">
-              <Maximize className="w-5 h-5" />
-            </button>
-          </div>
-        </div>
-      </div>
-
+      {/* CLOSE BUTTON */}
+      {onClose && (
+        <button
+          onClick={onClose}
+          className="absolute top-3 right-3 z-20 bg-black/70 p-2 rounded-full text-white"
+        >
+          <X />
+        </button>
+      )}
     </div>
   );
 };
